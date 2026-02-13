@@ -1,0 +1,109 @@
+version: '3.8'
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: market_ticks_mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword123
+      MYSQL_DATABASE: ${DB_NAME}
+      MYSQL_USER: ${DB_USER}
+      MYSQL_PASSWORD: ${DB_PASSWORD}
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${DB_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - market_ticks_network
+
+  redis:
+    image: redis:7-alpine
+    container_name: market_ticks_redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - market_ticks_network
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: market_ticks_web
+    command: >
+      sh -c "./wait-for-it.sh mysql:3306 --
+             python manage.py migrate &&
+             python manage.py collectstatic --noinput &&
+             python manage.py runserver 0.0.0.0:8000"
+    volumes:
+      - .:/app
+      - static_volume:/app/staticfiles
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - market_ticks_network
+
+  celery_worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: market_ticks_celery
+    command: >
+      sh -c "./wait-for-it.sh redis:6379 --
+             celery -A market_tick_system worker --loglevel=info"
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+    depends_on:
+      redis:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+    networks:
+      - market_ticks_network
+
+  tick_producer:
+    build:
+      context: .
+      dockerfile: Dockerfile.producer
+    container_name: market_ticks_producer
+    command: >
+      sh -c "./wait-for-it.sh web:8000 --
+             ./wait-for-it.sh redis:6379 --
+             python manage.py run_tick_producer --broker_id=${BROKER_ID:-1}"
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+    depends_on:
+      - web
+      - celery_worker
+      - redis
+    restart: unless-stopped
+    networks:
+      - market_ticks_network
+
+volumes:
+  mysql_data:
+  static_volume:
+
+networks:
+  market_ticks_network:
+    driver: bridge
