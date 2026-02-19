@@ -32,14 +32,23 @@ class BinanceWebSocketClient:
         self.max_reconnect_delay = 60  # seconds
 
     def _get_stream_url(self) -> str:
-        """Construct stream URL for multiple symbols"""
+        """Construct stream URL for multiple symbols using combined streams endpoint"""
         streams = '/'.join([f"{symbol}@ticker" for symbol in self.symbols])
-        return f"{self.ws_url}/{streams}"
+        # Single symbol: wss://.../ws/btcusdt@ticker
+        # Multiple symbols: wss://.../stream?streams=btcusdt@ticker/ethusdt@ticker/...
+        if len(self.symbols) == 1:
+            return f"{self.ws_url}/{streams}"
+        base = self.ws_url.rsplit('/ws', 1)[0]
+        return f"{base}/stream?streams={streams}"
 
     def _on_message(self, ws, message):
         """Handle incoming WebSocket messages"""
         try:
             data = json.loads(message)
+
+            # Combined streams wrap payload: {"stream": "btcusdt@ticker", "data": {...}}
+            if 'stream' in data and 'data' in data:
+                data = data['data']
 
             # Binance ticker format
             if 'e' in data and data['e'] == '24hrTicker':
